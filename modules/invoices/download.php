@@ -12,7 +12,9 @@ $stmt = $pdo->prepare("
   SELECT i.*, i.id AS invoice_id, 
          c.id AS customer_id, c.name AS customer_name, c.gstin AS customer_gstin,
          c.phone AS customer_phone, c.email AS customer_email,
-         c.billing_address, c.shipping_address
+         c.billing_address, c.shipping_address,
+         c.state AS customer_state, c.state_code AS customer_state_code,
+         c.city AS customer_city, c.pincode AS customer_pincode
   FROM invoices i
   LEFT JOIN customers c ON c.id = i.customer_id
   WHERE i.id = ?
@@ -27,6 +29,15 @@ $items->execute([$id]);
 $items = $items->fetchAll();
 
 $company = $pdo->query("SELECT * FROM settings LIMIT 1")->fetch();
+
+$taxBreakdown = get_invoice_tax_breakdown($invoice, [
+    'id'              => $invoice['customer_id'] ?? 0,
+    'name'            => $invoice['customer_name'] ?? '',
+    'gstin'           => $invoice['customer_gstin'] ?? '',
+    'state'           => $invoice['customer_state'] ?? '',
+    'state_code'      => $invoice['customer_state_code'] ?? '',
+    'billing_address' => $invoice['billing_address'] ?? ''
+]);
 
 // subtotal & tax calculation respecting tax-inclusive items
 $subtotal = 0;
@@ -242,7 +253,13 @@ body {
           <p style="margin:0; line-height:1.4; text-align:right;">
             <strong><?= e($invoice['customer_name']) ?></strong><br>
             <?= nl2br(e($invoice['billing_address'])) ?><br>
-            GSTIN: <?= e($invoice['customer_gstin']) ?><br>
+            <?php if (!empty($invoice['customer_city'])): ?>
+              <?= e($invoice['customer_city']) ?><?= !empty($invoice['customer_pincode']) ? ' - ' . e($invoice['customer_pincode']) : '' ?><br>
+            <?php endif; ?>
+            <?php if (!empty($taxBreakdown['client_state_name'])): ?>
+              State: <?= e($taxBreakdown['client_state_name']) ?> <?= !empty($taxBreakdown['place_of_supply']) ? '(Code: ' . e($taxBreakdown['place_of_supply']) . ')' : '' ?><br>
+            <?php endif; ?>
+            GSTIN: <?= e($invoice['customer_gstin'] ?: 'N/A') ?><br>
             Contact: <?= e($invoice['customer_phone']) ?>
           </p>
         </td>
@@ -283,8 +300,13 @@ body {
           </tr>
         <?php endforeach; ?>
           <tr class="totals"><td colspan="6" style="text-align:right;">Subtotal (Taxable Value)</td><td colspan="2" style="text-align:right;"><?= money($subtotal) ?></td></tr>
-          <tr class="totals"><td colspan="6" style="text-align:right;">IGST / Total Tax</td><td colspan="2" style="text-align:right;"><?= money($taxTotalDisplay) ?></td></tr>
-          <tr class="totals"><td colspan="6" style="text-align:right; font-size:11pt;">Grand Total</td><td colspan="2" style="text-align:right; font-size:11pt;"><?= money($invoice['total_amount']) ?></td></tr>
+          <?php if ($taxBreakdown['gst_type'] === 'INTRA'): ?>
+            <tr class="totals"><td colspan="6" style="text-align:right;">CGST (<?= $taxBreakdown['cgst_rate'] ?>%)</td><td colspan="2" style="text-align:right;"><?= money($taxBreakdown['cgst_amount']) ?></td></tr>
+            <tr class="totals"><td colspan="6" style="text-align:right;">SGST (<?= $taxBreakdown['sgst_rate'] ?>%)</td><td colspan="2" style="text-align:right;"><?= money($taxBreakdown['sgst_amount']) ?></td></tr>
+          <?php elseif ($taxBreakdown['gst_type'] === 'INTER'): ?>
+            <tr class="totals"><td colspan="6" style="text-align:right;">IGST (<?= $taxBreakdown['igst_rate'] ?>%)</td><td colspan="2" style="text-align:right;"><?= money($taxBreakdown['igst_amount']) ?></td></tr>
+          <?php endif; ?>
+          <tr class="totals"><td colspan="6" style="text-align:right; font-size:11pt; font-weight:bold;">Grand Total</td><td colspan="2" style="text-align:right; font-size:11pt; font-weight:bold;"><?= money($invoice['total_amount']) ?></td></tr>
         </tbody>
       </table>
     </div>

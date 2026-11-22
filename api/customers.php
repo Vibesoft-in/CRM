@@ -462,6 +462,22 @@ if ($method === 'POST') {
     $autoInvoice    = isset($input['auto_invoice']) ? (int)$input['auto_invoice'] : 1;
     $onboardDate    = !empty($input['onboard_date']) ? $input['onboard_date'] : date('Y-m-d');
 
+    if (empty($name)) {
+        json_error("Customer name is required.", 422, ['field' => 'name']);
+    }
+    if (empty($billingAddress)) {
+        json_error("Billing address is required.", 422, ['field' => 'billing_address']);
+    }
+    if (empty($city)) {
+        json_error("City is required.", 422, ['field' => 'city']);
+    }
+    if (empty($state)) {
+        json_error("State is required.", 422, ['field' => 'state']);
+    }
+    if (empty($pincode)) {
+        json_error("PIN code is required.", 422, ['field' => 'pincode']);
+    }
+
     // Duplicate Check: Check existing email if provided
     if (!empty($email)) {
         $dupChk = $pdo->prepare("SELECT id FROM customers WHERE email = ? LIMIT 1");

@@ -27,7 +27,8 @@ if ($invoice['status'] === 'cancelled') {
 }
 
 $itemsData = $pdo->query("SELECT id, name, hsn_sac, default_price, default_tax_rate FROM items ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
-$customers = $pdo->query("SELECT id, name, gstin FROM customers ORDER BY name ASC")->fetchAll();
+$customers = $pdo->query("SELECT id, name, gstin, state, state_code, city, pincode, billing_address FROM customers ORDER BY name ASC")->fetchAll();
+$businessGst = get_business_gst_state_details();
 
 $invItems = $pdo->prepare("SELECT * FROM invoice_items WHERE invoice_id = ?");
 $invItems->execute([$id]);
@@ -47,11 +48,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $items_json   = $_POST['items_json'] ?? '[]';
         $items_arr    = json_decode($items_json, true);
 
-        if (!is_array($items_arr) || count($items_arr) === 0) {
-            $err = 'Please add at least 1 item line to the invoice';
-        }
+        // Fetch selected customer for validation
+        $cStmt = $pdo->prepare("SELECT id, name, gstin, state, state_code, billing_address FROM customers WHERE id = ?");
+        $cStmt->execute([$customer_id]);
+        $cust = $cStmt->fetch(PDO::FETCH_ASSOC);
 
-        $invoice_type = in_array($_POST['invoice_type'] ?? '', ['gst', 'personal']) ? $_POST['invoice_type'] : ($invoice['invoice_type'] ?? 'gst');
+        if ($customer_id <= 0 || !$cust) {
+            $err = 'Please select a valid customer.';
+        } elseif (!is_array($items_arr) || count($items_arr) === 0) {
+            $err = 'Please add at least 1 item line to the invoice';
+        } else {
+            $invoice_type = in_array($_POST['invoice_type'] ?? '', ['gst', 'personal']) ? $_POST['invoice_type'] : ($invoice['invoice_type'] ?? 'gst');
+            $custGstin = trim($cust['gstin'] ?? '');
+
+            // Derive place of supply
+            if ($place === '') {
+                $place = normalize_gst_state_code($cust['state_code'] ?: $cust['state']);
+            } else {
+                $place = normalize_gst_state_code($place) ?: $place;
+            }
+
+            // If GST invoice and client has GSTIN, billing state / place of supply is strictly required!
+            if ($invoice_type === 'gst' && !empty($custGstin)) {
+                if (empty($place)) {
+                    $err = 'Selected client does not have a registered billing State. Please update client address or enter Place of Supply (State Code) before saving a GST invoice.';
+                }
+            }
+        }
 
         if (!$err) {
             $pdo->beginTransaction();
@@ -61,13 +84,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $pdo->prepare("DELETE FROM invoice_items WHERE invoice_id=?")->execute([$id]);
 
+                $gstType = determine_gst_type($place, $cust['gstin'] ?? '', $invoice_type);
+                $applyGst = ($gstType === 'INTRA' || $gstType === 'INTER');
+
                 $taxable = 0; $tax = 0;
                 foreach ($items_arr as $it) {
                     $name         = trim($it['name'] ?? '');
                     $hsn          = trim($it['hsn'] ?? '');
                     $qty          = max(1, (int)($it['qty'] ?? 1));
                     $rate         = (float)($it['rate'] ?? 0);
-                    $tax_rate     = (float)($it['tax_rate'] ?? 0);
+                    $tax_rate     = $applyGst ? (float)($it['tax_rate'] ?? 0) : 0.0;
                     $discount     = (float)($it['discount'] ?? 0);
                     $handler_name = trim($it['handler_name'] ?? '');
                     $is_inc       = !empty($it['is_tax_inclusive']);
@@ -83,8 +109,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $tax += $line_tax;
                 }
 
+                $taxable = round($taxable, 2);
+                $tax = round($tax, 2);
                 $total = round($taxable + $tax, 2);
-                $stmt = $pdo->prepare("UPDATE invoices SET taxable_value=?, tax_total=?, total_amount=? WHERE id=?");
+                $stmt = $pdo->prepare("UPDATE invoices SET taxable_value=?, tax_total=?, total_amount=?, amount_due=total_amount - amount_paid WHERE id=?");
                 $stmt->execute([$taxable, $tax, $total, $id]);
 
                 // Recalculate status & sync ledger
@@ -161,14 +189,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <div class="row g-3">
           <div class="col-md-4">
             <label class="form-label fw-medium">Customer / Client <span class="text-danger">*</span></label>
-            <select name="customer_id" class="form-select" required>
+            <select name="customer_id" id="customer_id" class="form-select" required>
               <option value="">-- Select Client --</option>
               <?php foreach ($customers as $c): ?>
-                <option value="<?= e($c['id']) ?>" <?= (int)$c['id'] === (int)$invoice['customer_id'] ? 'selected' : '' ?>>
-                  <?= e($c['name']) ?> <?= $c['gstin'] ? '('.e($c['gstin']).')' : '' ?>
+                <?php
+                  $cStateCode = normalize_gst_state_code($c['state_code'] ?: $c['state']);
+                ?>
+                <option value="<?= e($c['id']) ?>" 
+                        data-gstin="<?= e($c['gstin'] ?? '') ?>" 
+                        data-state="<?= e($c['state'] ?? '') ?>" 
+                        data-state-code="<?= e($cStateCode) ?>" 
+                        <?= (int)$c['id'] === (int)$invoice['customer_id'] ? 'selected' : '' ?>>
+                  <?= e($c['name']) ?> <?= $c['gstin'] ? '('.e($c['gstin']).')' : '(No GSTIN)' ?>
                 </option>
               <?php endforeach; ?>
             </select>
+            <div id="clientGstBadge" class="mt-2"></div>
           </div>
 
           <div class="col-md-2">
@@ -182,8 +218,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           </div>
 
           <div class="col-md-2">
-            <label class="form-label fw-medium">Place of Supply</label>
-            <input type="text" name="place_of_supply" class="form-control" value="<?= e($invoice['place_of_supply']) ?>">
+            <label class="form-label fw-medium">Place of Supply (State Code)</label>
+            <input type="text" name="place_of_supply" id="place_of_supply" class="form-control" value="<?= e($invoice['place_of_supply']) ?>" placeholder="e.g. 05" maxlength="2">
+            <small class="text-muted" style="font-size:0.72rem;">05 for UK, 09 for UP, etc.</small>
           </div>
 
           <div class="col-md-2">
@@ -279,7 +316,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <span class="text-muted">Taxable Subtotal:</span>
             <span class="fw-semibold text-dark" id="dispTaxable">₹<?= money($invoice['taxable_value']) ?></span>
           </div>
-          <div class="d-flex justify-content-between mb-2">
+          <div id="dispGstBreakdown">
+            <!-- Dynamically populated: CGST + SGST OR IGST OR No GST -->
+          </div>
+          <div class="d-flex justify-content-between mb-2" id="dispTaxTotalRow">
             <span class="text-muted">Total Tax Amount:</span>
             <span class="fw-semibold text-dark" id="dispTax">₹<?= money($invoice['tax_total']) ?></span>
           </div>
@@ -303,10 +343,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 <script>
 const itemsCatalog = <?= json_encode($itemsData) ?>;
+const businessGst = <?= json_encode($businessGst) ?>;
 
 (function(){
   const itemsTable = document.querySelector('#itemsTable tbody');
   const addRowBtn = document.querySelector('#addRow');
+  const customerSelect = document.querySelector('#customer_id');
+  const placeInput = document.querySelector('#place_of_supply');
+  const typeRadios = document.querySelectorAll('input[name="invoice_type"]');
+
+  function getGstCalculationMode() {
+    const invType = document.querySelector('input[name="invoice_type"]:checked') ? document.querySelector('input[name="invoice_type"]:checked').value : 'gst';
+    if (invType === 'personal') return 'NONE';
+
+    const opt = customerSelect && customerSelect.selectedIndex >= 0 ? customerSelect.options[customerSelect.selectedIndex] : null;
+    const gstin = opt ? (opt.dataset.gstin || '').trim() : '';
+    if (!gstin) return 'NONE';
+
+    let placeCode = (placeInput ? placeInput.value.trim() : '');
+    if (!placeCode && opt && opt.dataset.stateCode) {
+      placeCode = opt.dataset.stateCode.trim();
+    }
+    if (placeCode.length === 1 && placeCode >= '1' && placeCode <= '9') {
+      placeCode = '0' + placeCode;
+    }
+
+    if (!placeCode) return 'UNKNOWN';
+
+    const bizCode = (businessGst.state_code || '05').trim();
+    return (placeCode === bizCode) ? 'INTRA' : 'INTER';
+  }
 
   function rowHtml(name = '', qty = 1, rate = 0, isTaxInc = false) {
     return `<tr>
@@ -338,24 +404,32 @@ const itemsCatalog = <?= json_encode($itemsData) ?>;
   }
 
   function recalcTotals() {
+    const gstMode = getGstCalculationMode();
     let totalTaxable = 0;
     let totalTax = 0;
+    let primaryTaxRate = 18;
 
     document.querySelectorAll('#itemsTable tbody tr').forEach(tr => {
       const qty = parseInt(tr.querySelector('.item-qty').value, 10) || 1;
       const rate = parseFloat(tr.querySelector('.item-rate').value) || 0;
-      const taxRate = parseFloat(tr.querySelector('.item-tax').value) || 0;
+      let taxRate = parseFloat(tr.querySelector('.item-tax').value) || 0;
       const discount = parseFloat(tr.querySelector('.item-discount').value) || 0;
       const isTaxInc = tr.querySelector('.item-tax-inc') ? tr.querySelector('.item-tax-inc').checked : false;
       const hintEl = tr.querySelector('.tax-breakdown-hint');
+
+      if (gstMode === 'NONE') {
+        taxRate = 0;
+      } else if (taxRate > 0) {
+        primaryTaxRate = taxRate;
+      }
 
       let taxableAmount = 0;
       let taxAmount = 0;
 
       if (isTaxInc) {
-        let grossInc = qty * rate;
-        let discAmt = grossInc * (discount / 100);
-        let netInc = Math.max(0, grossInc - discAmt);
+        let grossInc = Math.round(qty * rate * 100) / 100;
+        let discAmt = Math.round(grossInc * (discount / 100) * 100) / 100;
+        let netInc = Math.max(0, Math.round((grossInc - discAmt) * 100) / 100);
 
         if (taxRate > 0) {
           taxableAmount = Math.round(((netInc * 100) / (100 + taxRate)) * 100) / 100;
@@ -367,15 +441,24 @@ const itemsCatalog = <?= json_encode($itemsData) ?>;
 
         if (hintEl) {
           hintEl.style.display = 'block';
-          hintEl.innerHTML = `Base: ₹${taxableAmount.toFixed(2)}<br>GST: ₹${taxAmount.toFixed(2)}`;
+          if (gstMode === 'INTRA' && taxAmount > 0) {
+            let half = Math.round((taxAmount / 2) * 100) / 100;
+            let otherHalf = Math.round((taxAmount - half) * 100) / 100;
+            let halfRate = Math.round((taxRate / 2) * 100) / 100;
+            hintEl.innerHTML = `Base: ₹${taxableAmount.toFixed(2)}<br>CGST (${halfRate}%): ₹${half.toFixed(2)} | SGST (${halfRate}%): ₹${otherHalf.toFixed(2)}`;
+          } else if (gstMode === 'INTER' && taxAmount > 0) {
+            hintEl.innerHTML = `Base: ₹${taxableAmount.toFixed(2)}<br>IGST (${taxRate}%): ₹${taxAmount.toFixed(2)}`;
+          } else {
+            hintEl.innerHTML = `Base (No Tax): ₹${taxableAmount.toFixed(2)}`;
+          }
         }
       } else {
-        let grossBase = qty * rate;
-        let discAmt = grossBase * (discount / 100);
-        let netBase = Math.max(0, grossBase - discAmt);
+        let grossBase = Math.round(qty * rate * 100) / 100;
+        let discAmt = Math.round(grossBase * (discount / 100) * 100) / 100;
+        let netBase = Math.max(0, Math.round((grossBase - discAmt) * 100) / 100);
 
         taxableAmount = netBase;
-        taxAmount = Math.round((taxableAmount * (taxRate / 100)) * 100) / 100;
+        taxAmount = Math.round(taxableAmount * (taxRate / 100) * 100) / 100;
 
         if (hintEl) {
           hintEl.style.display = 'none';
@@ -392,9 +475,70 @@ const itemsCatalog = <?= json_encode($itemsData) ?>;
     const grandTotal = Math.round((totalTaxable + totalTax) * 100) / 100;
 
     document.getElementById('dispTaxable').innerText = '₹' + totalTaxable.toFixed(2);
-    document.getElementById('dispTax').innerText = '₹' + totalTax.toFixed(2);
     document.getElementById('dispTotal').innerText = '₹' + grandTotal.toFixed(2);
+
+    const gstBreakdownEl = document.getElementById('dispGstBreakdown');
+    const badgeEl = document.getElementById('clientGstBadge');
+    const taxTotalRow = document.getElementById('dispTaxTotalRow');
+
+    if (gstMode === 'INTRA') {
+      let halfTax = Math.round((totalTax / 2) * 100) / 100;
+      let otherHalfTax = Math.round((totalTax - halfTax) * 100) / 100;
+      let halfRate = Math.round((primaryTaxRate / 2) * 100) / 100;
+
+      gstBreakdownEl.innerHTML = `
+        <div class="d-flex justify-content-between mb-2">
+          <span class="text-muted">CGST (${halfRate}%):</span>
+          <span class="fw-semibold text-dark">₹${halfTax.toFixed(2)}</span>
+        </div>
+        <div class="d-flex justify-content-between mb-2">
+          <span class="text-muted">SGST (${halfRate}%):</span>
+          <span class="fw-semibold text-dark">₹${otherHalfTax.toFixed(2)}</span>
+        </div>
+      `;
+      document.getElementById('dispTax').innerText = '₹' + totalTax.toFixed(2);
+      if (taxTotalRow) taxTotalRow.style.display = 'flex';
+      if (badgeEl) badgeEl.innerHTML = `<span class="badge bg-success-subtle text-success border border-success-subtle px-2 py-1"><i class="bi bi-geo-alt-fill me-1"></i>Intra-State: Uttarakhand → Uttarakhand (CGST ${halfRate}% + SGST ${halfRate}%)</span>`;
+    } else if (gstMode === 'INTER') {
+      gstBreakdownEl.innerHTML = `
+        <div class="d-flex justify-content-between mb-2">
+          <span class="text-muted">IGST (${primaryTaxRate}%):</span>
+          <span class="fw-semibold text-dark">₹${totalTax.toFixed(2)}</span>
+        </div>
+      `;
+      document.getElementById('dispTax').innerText = '₹' + totalTax.toFixed(2);
+      if (taxTotalRow) taxTotalRow.style.display = 'flex';
+      const opt = customerSelect && customerSelect.selectedIndex >= 0 ? customerSelect.options[customerSelect.selectedIndex] : null;
+      const cStateName = opt ? (opt.dataset.state || 'Inter-State') : 'Inter-State';
+      if (badgeEl) badgeEl.innerHTML = `<span class="badge bg-primary-subtle text-primary border border-primary-subtle px-2 py-1"><i class="bi bi-airplane-fill me-1"></i>Inter-State: Uttarakhand → ${cStateName} (IGST ${primaryTaxRate}%)</span>`;
+    } else {
+      gstBreakdownEl.innerHTML = `
+        <div class="d-flex justify-content-between mb-2 text-muted small fst-italic">
+          <span>Taxes:</span>
+          <span>No GST Applicable</span>
+        </div>
+      `;
+      document.getElementById('dispTax').innerText = '₹0.00';
+      if (taxTotalRow) taxTotalRow.style.display = 'none';
+      if (badgeEl) badgeEl.innerHTML = `<span class="badge bg-secondary-subtle text-secondary border px-2 py-1"><i class="bi bi-info-circle me-1"></i>Non-GST / Personal Billing (0% GST)</span>`;
+    }
   }
+
+  if (customerSelect) {
+    customerSelect.addEventListener('change', function(){
+      const opt = this.options[this.selectedIndex];
+      if (opt && opt.dataset.stateCode && !placeInput.value) {
+        placeInput.value = opt.dataset.stateCode;
+      }
+      recalcTotals();
+    });
+  }
+
+  if (placeInput) {
+    placeInput.addEventListener('input', recalcTotals);
+  }
+
+  typeRadios.forEach(r => r.addEventListener('change', recalcTotals));
 
   recalcTotals();
 

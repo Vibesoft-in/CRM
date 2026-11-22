@@ -2169,6 +2169,339 @@ function calculate_invoice_totals(array $items, float $invoiceDiscount = 0.0): a
 }
 
 /**
+ * Master List of Indian States & Union Territories with GST State Codes
+ */
+function get_indian_gst_states(): array {
+    return [
+        '01' => 'Jammu and Kashmir',
+        '02' => 'Himachal Pradesh',
+        '03' => 'Punjab',
+        '04' => 'Chandigarh',
+        '05' => 'Uttarakhand',
+        '06' => 'Haryana',
+        '07' => 'Delhi',
+        '08' => 'Rajasthan',
+        '09' => 'Uttar Pradesh',
+        '10' => 'Bihar',
+        '11' => 'Sikkim',
+        '12' => 'Arunachal Pradesh',
+        '13' => 'Nagaland',
+        '14' => 'Manipur',
+        '15' => 'Mizoram',
+        '16' => 'Tripura',
+        '17' => 'Meghalaya',
+        '18' => 'Assam',
+        '19' => 'West Bengal',
+        '20' => 'Jharkhand',
+        '21' => 'Odisha',
+        '22' => 'Chhattisgarh',
+        '23' => 'Madhya Pradesh',
+        '24' => 'Gujarat',
+        '26' => 'Dadra and Nagar Haveli and Daman and Diu',
+        '27' => 'Maharashtra',
+        '29' => 'Karnataka',
+        '30' => 'Goa',
+        '31' => 'Lakshadweep',
+        '32' => 'Kerala',
+        '33' => 'Tamil Nadu',
+        '34' => 'Puducherry',
+        '35' => 'Andaman and Nicobar Islands',
+        '36' => 'Telangana',
+        '37' => 'Andhra Pradesh',
+        '38' => 'Ladakh',
+        '97' => 'Other Territory',
+    ];
+}
+
+/**
+ * Normalize state name or code to a standardized 2-digit GST state code
+ */
+function normalize_gst_state_code(?string $stateOrCode): string {
+    if (!$stateOrCode) return '';
+    $val = trim($stateOrCode);
+    if ($val === '') return '';
+
+    $states = get_indian_gst_states();
+
+    // Check if directly matches a 2-digit key
+    $padCode = str_pad(ltrim($val, '0'), 2, '0', STR_PAD_LEFT);
+    if (isset($states[$padCode])) {
+        return $padCode;
+    }
+    if (isset($states[$val])) {
+        return $val;
+    }
+
+    // Common abbreviations
+    $clean = preg_replace('/[^a-z]/i', '', strtolower($val));
+    if ($clean === 'uk' || $clean === 'ua' || $clean === 'uttaranchal' || $clean === 'uttarakhand') return '05';
+    if ($clean === 'up' || $clean === 'uttarpradesh') return '09';
+    if ($clean === 'dl' || $clean === 'delhi' || $clean === 'newdelhi') return '07';
+    if ($clean === 'hr' || $clean === 'haryana') return '06';
+    if ($clean === 'pb' || $clean === 'punjab') return '03';
+    if ($clean === 'rj' || $clean === 'rajasthan') return '08';
+    if ($clean === 'mh' || $clean === 'maharashtra') return '27';
+    if ($clean === 'ka' || $clean === 'karnataka') return '29';
+    if ($clean === 'mp' || $clean === 'madhyapradesh') return '23';
+    if ($clean === 'gj' || $clean === 'gujarat') return '24';
+    if ($clean === 'wb' || $clean === 'westbengal') return '19';
+    if ($clean === 'br' || $clean === 'bihar') return '10';
+    if ($clean === 'tn' || $clean === 'tamilnadu') return '33';
+    if ($clean === 'ts' || $clean === 'telangana') return '36';
+    if ($clean === 'ap' || $clean === 'andhrapradesh') return '37';
+    if ($clean === 'kl' || $clean === 'kerala') return '32';
+    if ($clean === 'ch' || $clean === 'chandigarh') return '04';
+    if ($clean === 'hp' || $clean === 'himachalpradesh') return '02';
+    if ($clean === 'jk' || $clean === 'jammukashmir' || $clean === 'jammuandkashmir') return '01';
+
+    // Match full name
+    foreach ($states as $code => $name) {
+        $cleanName = preg_replace('/[^a-z]/i', '', strtolower($name));
+        if ($clean === $cleanName) {
+            return $code;
+        }
+    }
+
+    return '';
+}
+
+/**
+ * Get State Name from GST code or state name string
+ */
+function get_gst_state_name(?string $stateOrCode): string {
+    $code = normalize_gst_state_code($stateOrCode);
+    $states = get_indian_gst_states();
+    return $states[$code] ?? (trim($stateOrCode ?? ''));
+}
+
+/**
+ * Get Business GST Registration State Details from settings table
+ */
+function get_business_gst_state_details(): array {
+    global $pdo;
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+
+    $stateCode = '05'; // Default Uttarakhand
+    $stateName = 'Uttarakhand';
+    $gstin = '';
+    $bizAddress = '';
+
+    try {
+        if ($pdo) {
+            $stmt = $pdo->query("SELECT gstin, address FROM settings LIMIT 1");
+            $settings = $stmt ? $stmt->fetch(PDO::FETCH_ASSOC) : null;
+            if ($settings) {
+                $gstin = trim($settings['gstin'] ?? '');
+                $bizAddress = trim($settings['address'] ?? '');
+                if (strlen($gstin) >= 2) {
+                    $codePrefix = substr($gstin, 0, 2);
+                    $derivedCode = normalize_gst_state_code($codePrefix);
+                    if ($derivedCode !== '') {
+                        $stateCode = $derivedCode;
+                        $stateName = get_gst_state_name($derivedCode);
+                    }
+                } elseif (!empty($bizAddress)) {
+                    $derivedCode = normalize_gst_state_code($bizAddress);
+                    if ($derivedCode !== '') {
+                        $stateCode = $derivedCode;
+                        $stateName = get_gst_state_name($derivedCode);
+                    }
+                }
+            }
+        }
+    } catch (\Throwable $e) {}
+
+    $cached = [
+        'state_code' => $stateCode,
+        'state_name' => $stateName,
+        'gstin'      => $gstin,
+        'address'    => $bizAddress,
+    ];
+    return $cached;
+}
+
+/**
+ * Determine GST Type: 'INTRA' (CGST+SGST), 'INTER' (IGST), 'NONE', or 'UNKNOWN'
+ */
+function determine_gst_type(?string $clientStateOrCode, ?string $clientGstin = null, ?string $invoiceType = 'gst'): string {
+    if ($invoiceType === 'personal') {
+        return 'NONE';
+    }
+    $cleanGstin = trim($clientGstin ?? '');
+    if ($cleanGstin === '') {
+        return 'NONE';
+    }
+
+    $clientCode = normalize_gst_state_code($clientStateOrCode);
+    if ($clientCode === '' && strlen($cleanGstin) >= 2 && ctype_digit(substr($cleanGstin, 0, 2))) {
+        $clientCode = normalize_gst_state_code(substr($cleanGstin, 0, 2));
+    }
+
+    if ($clientCode === '') {
+        return 'UNKNOWN';
+    }
+
+    $business = get_business_gst_state_details();
+    $bizCode = $business['state_code'];
+
+    return ($clientCode === $bizCode) ? 'INTRA' : 'INTER';
+}
+
+/**
+ * Calculate dynamic GST breakdown (CGST, SGST, IGST) for an invoice record or array
+ */
+function get_invoice_tax_breakdown($invoice, $customer = null, bool $forceRecalculate = false): array {
+    global $pdo;
+
+    $taxTotal = round((float)($invoice['tax_total'] ?? 0), 2);
+    $taxableValue = round((float)($invoice['taxable_value'] ?? 0), 2);
+    $invoiceType = $invoice['invoice_type'] ?? 'gst';
+    $invoiceId = (int)($invoice['id'] ?? ($invoice['invoice_id'] ?? 0));
+
+    // If customer data is not passed or incomplete, fetch customer
+    if (!$customer && !empty($invoice['customer_id']) && $pdo) {
+        $cStmt = $pdo->prepare("SELECT id, name, gstin, state, state_code, billing_address FROM customers WHERE id = ?");
+        $cStmt->execute([(int)$invoice['customer_id']]);
+        $customer = $cStmt->fetch(PDO::FETCH_ASSOC);
+    }
+
+    $customerGstin = trim($customer['gstin'] ?? ($invoice['customer_gstin'] ?? ''));
+    $placeCode = normalize_gst_state_code($invoice['place_of_supply'] ?? ($customer['state_code'] ?? ($customer['state'] ?? '')));
+    $clientStateName = get_gst_state_name($placeCode ?: ($customer['state'] ?? ''));
+
+    // Clients without GSTIN or personal bill or 0 tax: No GST applied
+    if ($invoiceType === 'personal' || empty($customerGstin) || $taxTotal <= 0) {
+        return [
+            'gst_type'          => 'NONE',
+            'taxable_value'     => $taxableValue,
+            'tax_total'         => 0.00,
+            'cgst_amount'       => 0.00,
+            'sgst_amount'       => 0.00,
+            'igst_amount'       => 0.00,
+            'cgst_rate'         => 0,
+            'sgst_rate'         => 0,
+            'igst_rate'         => 0,
+            'total_rate'        => 0,
+            'has_gst'           => false,
+            'place_of_supply'   => $placeCode,
+            'client_state_name' => $clientStateName,
+        ];
+    }
+
+    // Determine primary tax rate from items or totals
+    $primaryRate = 18.0;
+    if ($invoiceId > 0 && $pdo) {
+        $stmtR = $pdo->prepare("SELECT tax_rate FROM invoice_items WHERE invoice_id = ? AND tax_rate > 0 ORDER BY id ASC LIMIT 1");
+        $stmtR->execute([$invoiceId]);
+        $rateFound = $stmtR->fetchColumn();
+        if ($rateFound !== false && (float)$rateFound > 0) {
+            $primaryRate = (float)$rateFound;
+        }
+    } elseif ($taxableValue > 0) {
+        $primaryRate = round(($taxTotal / $taxableValue) * 100, 1);
+    }
+
+    // Dynamic determination using Place of Supply or Customer State
+    $placeOfSupply = trim($invoice['place_of_supply'] ?? '');
+    $clientState = trim($customer['state_code'] ?? ($customer['state'] ?? ''));
+    $gstType = determine_gst_type($placeOfSupply ?: $clientState, $customerGstin, $invoiceType);
+
+    // Historical check: if gst_invoices table already has stored amounts AND matches current client GST type
+    if (!$forceRecalculate && $invoiceId > 0 && $pdo) {
+        $stmtG = $pdo->prepare("SELECT cgst_amount, sgst_amount, igst_amount FROM gst_invoices WHERE invoice_id = ?");
+        $stmtG->execute([$invoiceId]);
+        $gstRow = $stmtG->fetch(PDO::FETCH_ASSOC);
+        if ($gstRow) {
+            $cg = (float)$gstRow['cgst_amount'];
+            $sg = (float)$gstRow['sgst_amount'];
+            $ig = (float)$gstRow['igst_amount'];
+
+            if ($gstType === 'INTER' && $ig > 0 && $cg == 0 && $sg == 0) {
+                return [
+                    'gst_type'          => 'INTER',
+                    'taxable_value'     => $taxableValue,
+                    'tax_total'         => $taxTotal,
+                    'cgst_amount'       => 0.00,
+                    'sgst_amount'       => 0.00,
+                    'igst_amount'       => $taxTotal,
+                    'cgst_rate'         => 0,
+                    'sgst_rate'         => 0,
+                    'igst_rate'         => $primaryRate,
+                    'total_rate'        => $primaryRate,
+                    'has_gst'           => true,
+                    'place_of_supply'   => $placeCode,
+                    'client_state_name' => $clientStateName,
+                ];
+            } elseif ($gstType === 'INTRA' && ($cg > 0 || $sg > 0) && $ig == 0) {
+                $halfRate = round($primaryRate / 2, 2);
+                $cgstAmt = round($taxTotal / 2, 2);
+                $sgstAmt = round($taxTotal - $cgstAmt, 2);
+                return [
+                    'gst_type'          => 'INTRA',
+                    'taxable_value'     => $taxableValue,
+                    'tax_total'         => $taxTotal,
+                    'cgst_amount'       => $cgstAmt,
+                    'sgst_amount'       => $sgstAmt,
+                    'igst_amount'       => 0.00,
+                    'cgst_rate'         => $halfRate,
+                    'sgst_rate'         => $halfRate,
+                    'igst_rate'         => 0,
+                    'total_rate'        => $primaryRate,
+                    'has_gst'           => true,
+                    'place_of_supply'   => $placeCode,
+                    'client_state_name' => $clientStateName,
+                ];
+            }
+        }
+    }
+
+    // Dynamic determination using Place of Supply or Customer State
+    $placeOfSupply = trim($invoice['place_of_supply'] ?? '');
+    $clientState = trim($customer['state_code'] ?? ($customer['state'] ?? ''));
+    $gstType = determine_gst_type($placeOfSupply ?: $clientState, $customerGstin, $invoiceType);
+
+    if ($gstType === 'INTRA') {
+        $cgst = round($taxTotal / 2, 2);
+        $sgst = round($taxTotal - $cgst, 2);
+        $halfRate = round($primaryRate / 2, 2);
+        return [
+            'gst_type'          => 'INTRA',
+            'taxable_value'     => $taxableValue,
+            'tax_total'         => $taxTotal,
+            'cgst_amount'       => $cgst,
+            'sgst_amount'       => $sgst,
+            'igst_amount'       => 0.00,
+            'cgst_rate'         => $halfRate,
+            'sgst_rate'         => $halfRate,
+            'igst_rate'         => 0,
+            'total_rate'        => $primaryRate,
+            'has_gst'           => true,
+            'place_of_supply'   => $placeCode,
+            'client_state_name' => $clientStateName,
+        ];
+    } else {
+        return [
+            'gst_type'          => 'INTER',
+            'taxable_value'     => $taxableValue,
+            'tax_total'         => $taxTotal,
+            'cgst_amount'       => 0.00,
+            'sgst_amount'       => 0.00,
+            'igst_amount'       => $taxTotal,
+            'cgst_rate'         => 0,
+            'sgst_rate'         => 0,
+            'igst_rate'         => $primaryRate,
+            'total_rate'        => $primaryRate,
+            'has_gst'           => true,
+            'place_of_supply'   => $placeCode,
+            'client_state_name' => $clientStateName,
+        ];
+    }
+}
+
+/**
  * Get user_id associated with an employee_id
  */
 function get_user_id_by_employee_id(PDO $pdo, int $empId): ?int {
@@ -2386,15 +2719,22 @@ function sync_invoice_to_subregistry($invoice_id) {
 
         $chk = $pdo->prepare("SELECT id FROM gst_invoices WHERE invoice_id = ?");
         $chk->execute([$invoice_id]);
-        $taxTotal = (float)($inv['tax_total'] ?? 0);
-        $taxable = (float)($inv['taxable_value'] ?? 0);
-        $cgst = round($taxTotal / 2, 2);
-        $sgst = round($taxTotal / 2, 2);
-        $igst = 0.00;
+        $taxTotal = round((float)($inv['tax_total'] ?? 0), 2);
+        $taxable = round((float)($inv['taxable_value'] ?? 0), 2);
+
+        // Fetch customer to check GSTIN and State
+        $cStmt = $pdo->prepare("SELECT id, name, gstin, state, state_code, billing_address FROM customers WHERE id = ?");
+        $cStmt->execute([(int)$inv['customer_id']]);
+        $cust = $cStmt->fetch(PDO::FETCH_ASSOC);
+
+        $breakdown = get_invoice_tax_breakdown($inv, $cust, true);
+        $cgst = (float)$breakdown['cgst_amount'];
+        $sgst = (float)$breakdown['sgst_amount'];
+        $igst = (float)$breakdown['igst_amount'];
 
         if ($chk->fetch()) {
-            $pdo->prepare("UPDATE gst_invoices SET taxable_value = ?, cgst_amount = ?, sgst_amount = ?, tax_total = ?, total_amount = ?, status = ?, cancellation_reason = ?, invoice_date = ?, financial_year = ?, month_str = ? WHERE invoice_id = ?")
-                ->execute([$taxable, $cgst, $sgst, $taxTotal, $inv['total_amount'], $status, $reason, $inv['invoice_date'], $fy, $m, $invoice_id]);
+            $pdo->prepare("UPDATE gst_invoices SET taxable_value = ?, cgst_amount = ?, sgst_amount = ?, igst_amount = ?, tax_total = ?, total_amount = ?, status = ?, cancellation_reason = ?, invoice_date = ?, financial_year = ?, month_str = ? WHERE invoice_id = ?")
+                ->execute([$taxable, $cgst, $sgst, $igst, $taxTotal, $inv['total_amount'], $status, $reason, $inv['invoice_date'], $fy, $m, $invoice_id]);
         } else {
             if ($serial <= 0) {
                 $maxS = (int)($pdo->query("SELECT MAX(serial_no) FROM gst_invoices")->fetchColumn() ?: 0);

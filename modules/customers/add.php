@@ -36,8 +36,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $due_days             = (int)($_POST['due_days'] ?? 10);
         $auto_invoice         = isset($_POST['auto_invoice']) ? 1 : 0;
 
+        $state_code           = normalize_gst_state_code($state_code ?: $state);
+        if (empty($state) && !empty($state_code)) {
+            $state = get_gst_state_name($state_code);
+        }
+
         if (empty($name)) {
-            $err = 'Client Name is required.';
+            $err = 'Client / Company Name is required.';
+        } elseif (empty($billing_address)) {
+            $err = 'Billing Address is required.';
+        } elseif (empty($city)) {
+            $err = 'City is required.';
+        } elseif (empty($state)) {
+            $err = 'State is required. Please select a valid State / UT.';
+        } elseif (empty($pincode)) {
+            $err = 'PIN Code is required.';
         } else {
             // Handle Client Logo Upload
             $clientLogoPath = null;
@@ -237,60 +250,86 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           </div>
         </div>
 
-        <!-- Advanced Details (collapsible) -->
+        <!-- Address & Location (Required) -->
+        <div class="card border-0 shadow-sm mb-4" style="border-radius: 14px;">
+          <div class="card-header bg-white py-3 border-bottom">
+            <h6 class="fw-bold mb-0 text-dark">
+              <i class="bi bi-geo-alt me-2 text-primary"></i>Billing Address & Location 
+              <span class="badge bg-danger ms-1" style="font-size:0.65rem;">Required</span>
+            </h6>
+          </div>
+          <div class="card-body">
+            <div class="row g-3">
+              <div class="col-12">
+                <label class="form-label fw-medium">Billing Address <span class="text-danger">*</span></label>
+                <textarea name="billing_address" class="form-control" rows="2" placeholder="Full street address, building, premises..." required><?= e($_POST['billing_address'] ?? '') ?></textarea>
+              </div>
+              <div class="col-md-5">
+                <label class="form-label fw-medium">City <span class="text-danger">*</span></label>
+                <input type="text" name="city" class="form-control" placeholder="e.g. Dehradun" value="<?= e($_POST['city'] ?? '') ?>" required>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label fw-medium">State <span class="text-danger">*</span></label>
+                <select name="state" id="client_state" class="form-select" required>
+                  <option value="">-- Select State / UT --</option>
+                  <?php foreach (get_indian_gst_states() as $stCode => $stName): ?>
+                    <option value="<?= e($stName) ?>" data-code="<?= $stCode ?>" <?= (($_POST['state'] ?? '') === $stName || normalize_gst_state_code($_POST['state_code'] ?? '') === $stCode) ? 'selected' : '' ?>>
+                      <?= e($stName) ?> (<?= $stCode ?>)
+                    </option>
+                  <?php endforeach; ?>
+                </select>
+              </div>
+              <div class="col-md-3">
+                <label class="form-label fw-medium">PIN Code <span class="text-danger">*</span></label>
+                <input type="text" name="pincode" class="form-control" placeholder="e.g. 248001" value="<?= e($_POST['pincode'] ?? '') ?>" maxlength="10" required>
+              </div>
+              <div class="col-md-3">
+                <label class="form-label fw-medium">State Code</label>
+                <input type="text" name="state_code" id="client_state_code" class="form-control bg-light" placeholder="05" value="<?= e($_POST['state_code'] ?? '') ?>" readonly>
+              </div>
+              <div class="col-md-5">
+                <label class="form-label fw-medium">GSTIN</label>
+                <input type="text" name="gstin" id="client_gstin" class="form-control text-uppercase" placeholder="05AAAAA0000A1Z5" value="<?= e($_POST['gstin'] ?? '') ?>" maxlength="15">
+                <small class="text-muted" style="font-size:0.75rem;">15-digit GSTIN (Leave empty if client has no GSTIN).</small>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label fw-medium">PAN</label>
+                <input type="text" name="pan" id="client_pan" class="form-control text-uppercase" placeholder="ABCDE1234F" value="<?= e($_POST['pan'] ?? '') ?>" maxlength="10">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Additional Details (collapsible) -->
         <div class="card border-0 shadow-sm mb-4" style="border-radius: 14px;">
           <div class="card-header bg-white py-3 border-bottom" style="cursor:pointer;" onclick="document.getElementById('advancedCollapse').classList.toggle('show')">
             <h6 class="fw-bold mb-0 text-dark d-flex align-items-center justify-content-between">
-              <span><i class="bi bi-sliders me-2 text-secondary"></i>Additional Details <small class="text-muted fw-normal">(Tax, Address, Notes)</small></span>
+              <span><i class="bi bi-sliders me-2 text-secondary"></i>Additional Details <small class="text-muted fw-normal">(Shipping, Notes, Web)</small></span>
               <i class="bi bi-chevron-down text-muted"></i>
             </h6>
           </div>
           <div class="collapse" id="advancedCollapse">
             <div class="card-body">
               <div class="row g-3">
-                <div class="col-md-6">
-                  <label class="form-label fw-medium">GSTIN</label>
-                  <input type="text" name="gstin" class="form-control" placeholder="22AAAAA0000A1Z5">
-                </div>
-                <div class="col-md-3">
-                  <label class="form-label fw-medium">PAN</label>
-                  <input type="text" name="pan" class="form-control" placeholder="ABCDE1234F">
-                </div>
-                <div class="col-md-3">
-                  <label class="form-label fw-medium">Website</label>
-                  <input type="url" name="website" class="form-control" placeholder="https://...">
+                <div class="col-12">
+                  <label class="form-label fw-medium">Shipping Address <small class="text-muted">(Optional)</small></label>
+                  <textarea name="shipping_address" class="form-control" rows="2" placeholder="Leave blank if same as billing address..."><?= e($_POST['shipping_address'] ?? '') ?></textarea>
                 </div>
                 <div class="col-md-6">
                   <label class="form-label fw-medium">Alternate Phone</label>
-                  <input type="text" name="alternate_phone" class="form-control">
+                  <input type="text" name="alternate_phone" class="form-control" value="<?= e($_POST['alternate_phone'] ?? '') ?>">
                 </div>
                 <div class="col-md-6">
-                  <label class="form-label fw-medium">City</label>
-                  <input type="text" name="city" class="form-control">
-                </div>
-                <div class="col-md-6">
-                  <label class="form-label fw-medium">State</label>
-                  <input type="text" name="state" class="form-control">
-                </div>
-                <div class="col-md-3">
-                  <label class="form-label fw-medium">Pincode</label>
-                  <input type="text" name="pincode" class="form-control">
-                </div>
-                <div class="col-md-3">
-                  <label class="form-label fw-medium">State Code</label>
-                  <input type="text" name="state_code" class="form-control" placeholder="07">
-                </div>
-                <div class="col-12">
-                  <label class="form-label fw-medium">Billing Address</label>
-                  <textarea name="billing_address" class="form-control" rows="2" placeholder="Full address..."></textarea>
+                  <label class="form-label fw-medium">Website</label>
+                  <input type="url" name="website" class="form-control" placeholder="https://..." value="<?= e($_POST['website'] ?? '') ?>">
                 </div>
                 <div class="col-12">
                   <label class="form-label fw-medium text-dark"><i class="bi bi-card-text text-primary me-1"></i> Client Overview Message & Scope Notes</label>
-                  <textarea name="overview_notes" class="form-control" rows="3" placeholder="Overview notes / summary of agreed work for quick reference on client profile..."></textarea>
+                  <textarea name="overview_notes" class="form-control" rows="3" placeholder="Overview notes / summary of agreed work for quick reference on client profile..."><?= e($_POST['overview_notes'] ?? '') ?></textarea>
                 </div>
                 <div class="col-12">
                   <label class="form-label fw-medium">Internal Private Notes</label>
-                  <textarea name="notes" class="form-control" rows="2" placeholder="Private internal notes, payment terms, preferences..."></textarea>
+                  <textarea name="notes" class="form-control" rows="2" placeholder="Private internal notes, payment terms, preferences..."><?= e($_POST['notes'] ?? '') ?></textarea>
                 </div>
               </div>
             </div>
@@ -462,6 +501,42 @@ document.getElementById('serviceRowsContainer').addEventListener('click', functi
     }
   }
 });
+
+// Auto-sync State Code & Auto-detect State from GSTIN
+(function(){
+  const stateSelect = document.getElementById('client_state');
+  const stateCodeInput = document.getElementById('client_state_code');
+  const gstinInput = document.getElementById('client_gstin');
+
+  if (stateSelect && stateCodeInput) {
+    stateSelect.addEventListener('change', function() {
+      const opt = this.options[this.selectedIndex];
+      stateCodeInput.value = opt ? (opt.dataset.code || '') : '';
+    });
+    // Set initial state code if pre-selected
+    if (stateSelect.selectedIndex > 0) {
+      const opt = stateSelect.options[stateSelect.selectedIndex];
+      if (opt && opt.dataset.code) stateCodeInput.value = opt.dataset.code;
+    }
+  }
+
+  if (gstinInput && stateSelect) {
+    gstinInput.addEventListener('input', function() {
+      const val = this.value.trim().toUpperCase();
+      this.value = val;
+      if (val.length >= 2) {
+        const code = val.substring(0, 2);
+        for (let i = 0; i < stateSelect.options.length; i++) {
+          if (stateSelect.options[i].dataset.code === code) {
+            stateSelect.selectedIndex = i;
+            if (stateCodeInput) stateCodeInput.value = code;
+            break;
+          }
+        }
+      }
+    });
+  }
+})();
 </script>
 
 <?php include '../../includes/footer.php'; ?>
