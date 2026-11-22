@@ -1,0 +1,14 @@
+# robots.txt — Crawler Directives for VibeSoft CMS
+User-agent: *
+Disallow: /admin/
+Disallow: /manager/
+Disallow: /employee/
+Disallow: /modules/
+Disallow: /api/
+Disallow: /database/
+Disallow: /config/
+Disallow: /includes/
+Disallow: /storage/
+Disallow: /logs/
+Disallow: /scratch/
+Disallow: /assets/uploads/

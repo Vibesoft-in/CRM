@@ -1,0 +1,22 @@
+Options -Indexes
+
+# Block direct access to sensitive file extensions
+<FilesMatch "(^\.env|\.sql|\.log|\.bak|\.old|\.tmp|\.git|\.md|\.json|\.lock)$">
+  <IfModule mod_authz_core.c>
+    Require all denied
+  </IfModule>
+  <IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+  </IfModule>
+</FilesMatch>
+
+# Block access to database and scratch directories
+RedirectMatch 403 ^/(database|scratch|logs)/
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  # Pass Authorization header to PHP in Apache
+  RewriteCond %{HTTP:Authorization} .
+  RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+</IfModule>

@@ -1,0 +1,17 @@
+# Environment Configuration
+.env
+.env.backup
+.env.local
+
+# Application Logs
+logs/*.log
+*.log
+
+# OS & Editor Files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Database backups (keep sql exports in database/ if needed)
+database/backups/*.sql
