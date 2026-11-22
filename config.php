@@ -90,11 +90,11 @@ if (getenv('DB_NAME')) {
     $dbUser = 'root';
     $dbPass = '';
 } else {
-    // Hostinger Production MySQL credentials
+    // Production MySQL credentials (configured via .env on server)
     $dbHost = 'localhost';
-    $dbName = 'u537268535_cms_v1_17_sep';
-    $dbUser = 'u537268535_Vibesoft_v1';
-    $dbPass = 'Vibesoft@#2021';
+    $dbName = 'your_production_db';
+    $dbUser = 'your_production_user';
+    $dbPass = 'your_production_password';
 }
 
 try {
